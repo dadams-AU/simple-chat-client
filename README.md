@@ -15,24 +15,28 @@ This is a simple chat client script written in Python. It connects to a server, 
    ```bash
    cd simple-chat-client
    ```
-
-3. Install the required libraries:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
 ## Usage
 
-1. Ensure your chat server is running and listening for incoming connections.
+1. Ensure your chat server is running and listening for incoming connections on indicated port
 
-2. Run the chat client script:
+1. Ensure you have Python 3 installed.
+
+1. Add to your PATH environment variable:
+   ```bash
+   export PATH=$PATH:/path/to/simple-chat-client
+   ```
+
+1. Do the same for client computers. 
+
+
+1. Run the chat client script:
    ```bash
    python3 chat.py
    ```
 
-3. Enter your desired nickname when prompted.
+1. Enter your desired nickname when prompted.
 
-4. Start chatting!
+1. Start chatting!
 
 ## Contributing
 
