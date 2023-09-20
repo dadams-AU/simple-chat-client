@@ -8,7 +8,7 @@ This is a simple chat client script written in Python. It connects to a server, 
 
 1. Clone this repository:
    ```bash
-   git clone [https://github.com/dadams-AU/simple-chat-client.git]
+   git clone https://github.com/dadams-AU/simple-chat-client.git
    ```
 
 2. Navigate to the directory:
