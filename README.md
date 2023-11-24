@@ -17,6 +17,8 @@ This is a simple chat client script written in Python. It connects to a server, 
    ```
 ## Usage
 
+1. Locate your local ip address and open port 65432 (or any port you like)
+
 1. Ensure your chat server is running and listening for incoming connections on indicated port
 
 1. Ensure you have Python 3 installed.
