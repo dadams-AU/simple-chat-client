@@ -14,7 +14,7 @@ def handle_client(client_socket):
     client_socket.close()
 
 def server():
-    host = '192.168.0.74'
+    host = '192.168.103'
     port = 65432
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
