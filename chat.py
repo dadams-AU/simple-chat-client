@@ -84,7 +84,7 @@ class ChatClient:
         signal.signal(signal.SIGINT, signal_handler)
         
         while True:
-            host = input("Enter server IP (default: 192.168.0.74): ").strip() or "192.168.0.74"
+            host = input("Enter server IP (default: 192.168.0.103): ").strip() or "192.168.0.103"
             try:
                 port = int(input("Enter port (default: 65432): ").strip() or "65432")
                 break
