@@ -27,14 +27,73 @@ A simple multi-threaded chat application with server and client components, allo
 python3 server.py
 ```
 
-### Running the Server in Background (macOS)
+### Running the Server in Background
 
-Choose one of these methods:
+#### Linux (systemd)
 
-#### Using Screen (Recommended for testing)
+1. Create a system service file:
+```bash
+sudo nano /etc/systemd/system/chatserver.service
+```
+
+2. Add this configuration (adjust paths accordingly):
+```ini
+[Unit]
+Description=Python Chat Server
+After=network.target
+
+[Service]
+Type=simple
+User=yourusername
+ExecStart=/usr/bin/python3 /path/to/your/server.py
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/chatserver.log
+StandardError=append:/var/log/chatserver.error.log
+
+[Install]
+WantedBy=multi-user.target
+```
+
+3. Enable and start the service:
+```bash
+# Reload systemd to recognize the new service
+sudo systemctl daemon-reload
+
+# Enable the service to start on boot
+sudo systemctl enable chatserver
+
+# Start the service
+sudo systemctl start chatserver
+
+# Check status
+sudo systemctl status chatserver
+
+# View logs
+journalctl -u chatserver
+```
+
+4. Common systemd commands:
+```bash
+# Stop the service
+sudo systemctl stop chatserver
+
+# Restart the service
+sudo systemctl restart chatserver
+
+# Disable autostart
+sudo systemctl disable chatserver
+```
+
+#### macOS (Launch Agent)
+
+[Previous macOS instructions remain the same...]
+
+#### Using Screen (Available on both Linux and macOS)
 ```bash
 # Install screen if needed
-brew install screen
+# For Arch Linux:
+sudo pacman -S screen
 
 # Start a new screen session
 screen -S chat_server
