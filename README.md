@@ -93,6 +93,12 @@ sudo systemctl disable chatserver
 # For Arch Linux:
 sudo pacman -S screen
 
+# For Ubuntu/Debian:
+sudo apt-get install screen
+
+# For macOS:
+brew install screen
+
 # Start a new screen session
 screen -S chat_server
 
@@ -155,7 +161,7 @@ python3 client.py
 ```
 
 2. Enter the requested information:
-   - Server IP address (defaults to 192.168.0.74)
+   - Server IP address (defaults to 192.168.0.103)
    - Port number (defaults to 65432)
    - Your nickname
 
