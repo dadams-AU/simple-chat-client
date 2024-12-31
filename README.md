@@ -1,68 +1,149 @@
-Updating the README to include both the client and server setup provides a comprehensive guide for users on how to run your chat application. Below is an enhanced README version that includes instructions for both the server and client components:
+# Python Chat Application
 
----
+A simple multi-threaded chat application with server and client components, allowing multiple users to connect and chat in real-time.
 
-# Simple Chat Application
+## Features
 
-This repository contains a simple chat application written in Python. It includes both the server and client scripts, allowing users to set up their own chat server, connect as clients, choose nicknames, and send/receive messages in a multi-threaded environment.
+- Multi-threaded server supporting multiple simultaneous connections
+- Nickname-based user identification
+- Real-time message broadcasting
+- Graceful connection handling and error recovery
+- Background server operation support
+- Clean shutdown handling
 
-## Installation
+## Requirements
 
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/dadams-AU/simple-chat-client.git
-   ```
-
-2. Navigate to the cloned directory:
-   ```bash
-   cd simple-chat-client
-   ```
+- Python 3.6 or higher
+- macOS, Linux, or Windows operating system
+- Network connectivity between server and clients
 
 ## Server Setup
 
-1. Locate your local IP address and open port 65432 (or any port you prefer).
+### Running the Server
 
-2. Make sure you have Python 3 installed on your system.
+1. Clone the repository and navigate to the project directory
+2. Run the server:
+```bash
+python3 server.py
+```
 
-3. To make the server script executable and set it to auto-start (optional), refer to the detailed steps provided in the documentation/comments within the repository.
+### Running the Server in Background (macOS)
 
-4. Start the chat server by running:
-   ```bash
-   python3 server.py
-   ```
-   Ensure the server is running and listening for incoming connections on the indicated port before starting any clients.
+Choose one of these methods:
+
+#### Using Screen (Recommended for testing)
+```bash
+# Install screen if needed
+brew install screen
+
+# Start a new screen session
+screen -S chat_server
+
+# Run the server
+python3 server.py
+
+# Detach from screen (press Ctrl-A, then D)
+
+# To reattach later:
+screen -r chat_server
+```
+
+#### Using nohup
+```bash
+nohup python3 server.py > chat_server.log 2>&1 &
+```
+
+#### Using Launch Agent (Recommended for production)
+
+1. Create a Launch Agent configuration:
+```bash
+nano ~/Library/LaunchAgents/com.user.chatserver.plist
+```
+
+2. Add this configuration (adjust paths accordingly):
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.chatserver</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/path/to/your/server.py</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/chatserver.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/chatserver.error.log</string>
+</dict>
+</plist>
+```
+
+3. Load the Launch Agent:
+```bash
+launchctl load ~/Library/LaunchAgents/com.user.chatserver.plist
+```
 
 ## Client Setup
 
-1. Ensure the chat server is running and accessible from the client machine.
+1. Run the client:
+```bash
+python3 client.py
+```
 
-2. If necessary, adjust your PATH environment variable to include the chat application directory (optional):
-   ```bash
-   export PATH=$PATH:/path/to/simple-chat-client
-   ```
+2. Enter the requested information:
+   - Server IP address (defaults to 192.168.0.74)
+   - Port number (defaults to 65432)
+   - Your nickname
 
-3. Run the chat client script on each client computer:
-   ```bash
-   python3 chat.py
-   ```
+## Client Commands
 
-4. When prompted, enter your desired nickname.
+- `/quit` - Exit the chat
+- Ctrl+C - Force quit the application
 
-5. You're now ready to start chatting!
+## Troubleshooting
 
-## Usage
+### Server Issues
+- Ensure the server IP address is correct and accessible
+- Check if the port is available and not blocked by firewall
+- Verify the server is running using `ps aux | grep server.py`
+- Check server logs for errors
 
-- **Server**: The server needs to be started before any clients can connect. It listens for incoming connections and handles messages between clients.
-- **Client**: After starting the client script, enter a nickname when prompted. Once connected, you can start sending messages to the chat, which will be broadcasted to all connected clients.
+### Client Issues
+- Confirm the server is running and accessible
+- Verify the correct IP address and port
+- Check network connectivity between client and server
+- Ensure Python 3 is installed and working correctly
+
+## Development
+
+### Server Architecture
+- Multi-threaded design using Python's threading module
+- Socket-based communication
+- Broadcast message handling
+- Client connection management
+- Signal handling for clean shutdown
+
+### Client Architecture
+- Separate threads for sending and receiving messages
+- Error handling and recovery
+- Clean shutdown support
+- User-friendly interface
 
 ## Contributing
 
-Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change. Feel free to contribute to both the server and client code or any documentation improvements.
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
 
 ## License
 
-This project is licensed under the [MIT License](https://github.com/dadams-AU/simple-chat-client/blob/main/LICENSE).
-
----
-
-This README provides a clear, structured guide for setting up and using both the server and client parts of your chat application. Feel free to adjust the instructions based on the actual paths, requirements, or any additional steps specific to your project.
+This project is licensed under the MIT License - see the LICENSE file for details.
