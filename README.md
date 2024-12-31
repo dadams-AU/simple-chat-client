@@ -87,8 +87,6 @@ sudo systemctl disable chatserver
 
 #### macOS (Launch Agent)
 
-[Previous macOS instructions remain the same...]
-
 #### Using Screen (Available on both Linux and macOS)
 ```bash
 # Install screen if needed
