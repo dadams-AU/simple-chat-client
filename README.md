@@ -157,7 +157,7 @@ launchctl load ~/Library/LaunchAgents/com.user.chatserver.plist
 
 1. Run the client:
 ```bash
-python3 client.py
+python3 chat.py
 ```
 
 2. Enter the requested information:
