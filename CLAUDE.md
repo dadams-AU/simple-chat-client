@@ -2,14 +2,24 @@
 
 ## Project Overview
 
-`simple-chat-client` is a lightweight, pure-Python TCP chat application. It consists of two standalone scripts:
+`simple-chat-client` is a lightweight, pure-Python TCP chat application with **TLS encryption**, **password-authenticated user accounts**, and **persistent message history**.
 
-- **`server.py`** — Multi-threaded chat server that accepts connections and broadcasts messages to all clients.
-- **`chat.py`** — Interactive chat client that connects to the server and enables real-time messaging.
+It consists of a `simplechat` package plus two backwards-compat shim scripts:
 
-**No external dependencies.** Only Python standard library modules are used (`socket`, `threading`, `signal`, `sys`, `time`).
+| File | Purpose |
+|---|---|
+| `simplechat/server.py` | Multi-threaded TLS chat server |
+| `simplechat/client.py` | Interactive TLS chat client |
+| `simplechat/db.py` | SQLite persistence (users + messages) |
+| `simplechat/__init__.py` | Package version |
+| `server.py` | Shim → `simplechat.server:main` |
+| `chat.py` | Shim → `simplechat.client:main` |
+| `generate_cert.py` | One-time self-signed cert generator |
+| `pyproject.toml` | pip install config |
 
-**Python requirement:** 3.6+
+**No external dependencies.** Only Python standard library modules are used: `socket`, `ssl`, `threading`, `signal`, `sys`, `time`, `sqlite3`, `hashlib`, `os`, `argparse`, `getpass`, `subprocess`.
+
+**Python requirement:** 3.8+
 
 ---
 
@@ -17,82 +27,138 @@
 
 ```
 simple-chat-client/
-├── chat.py          # Chat client (118 lines)
-├── server.py        # Chat server (81 lines)
-├── README.md        # User-facing documentation
-├── LICENSE          # MIT License (David P. Adams, 2025)
+├── simplechat/
+│   ├── __init__.py      # version = "0.2.0"
+│   ├── server.py        # ChatServer class + main()
+│   ├── client.py        # ChatClient class + main()
+│   └── db.py            # SQLite helpers
+├── server.py            # Shim (backwards compat)
+├── chat.py              # Shim (backwards compat)
+├── generate_cert.py     # Cert generator (uses subprocess + openssl)
+├── pyproject.toml       # pip install / console scripts
+├── README.md
+├── LICENSE              # MIT (David P. Adams, 2025)
 └── docs/
-    └── background.md  # Guide for running server persistently (screen, nohup, systemd, launchctl)
+    └── background.md    # Persistent server deployment guide
 ```
 
 ---
 
 ## Running the Application
 
+### First-time server setup (one time)
+```bash
+python generate_cert.py       # creates cert.pem + key.pem
+```
+
 ### Start the server
 ```bash
-python server.py
+python server.py              # direct
+chat-server                   # after pip install .
+chat-server --port 65432 --db chat.db --cert cert.pem --key key.pem
 ```
-Listens on `0.0.0.0:65432` by default.
 
 ### Start the client
 ```bash
-python chat.py
+python chat.py                # direct (interactive prompts)
+chat-client                   # after pip install .
+chat-client --host 192.168.0.103 --nickname Alice
 ```
-Prompts for:
-1. Server IP (default: `192.168.0.103`)
-2. Port (default: `65432`)
-3. Nickname
+
+First connect with a nickname = **registration** (choose a password).
+Subsequent connects = **login** (enter password).
 
 ### Client commands
-- `/quit` — Gracefully disconnect
+- `/quit` — Graceful disconnect
 - `Ctrl+C` — Force exit
 
 ---
 
 ## Architecture & Design
 
-### Protocol
-A simple, text-based TCP protocol:
+### Protocol (v2)
 
-1. Client connects.
-2. Server sends the literal string `NICK`.
-3. Client responds with its chosen nickname.
-4. Server broadcasts `"<nickname> joined the chat!"`.
-5. All subsequent messages from the client are broadcast as-is to all connected clients.
-6. On disconnect, server broadcasts `"<nickname> left the chat!"`.
+```
+S→C  NICK
+C→S  <nickname>
+S→C  PASSWORD:REGISTER   (new user)
+  or PASSWORD:LOGIN       (returning user)
+C→S  <password>
+S→C  AUTH:OK
+  or ERROR:<reason>       (closes connection on error)
 
-### Message Format
-Messages are sent and received as UTF-8 encoded strings, up to 1024 bytes per message:
+-- auth succeeded --
+
+S→C  HISTORY:<n>          (omitted if no history)
+S→C  [HH:MM] nick: text   (n times)
+S→C  HISTORY:END
+S→C  OK:Welcome, <nickname>!
+S→C  <nickname> joined the chat!   (broadcast to others)
+
+-- chat loop --
+
+C→S  <message text>
+S→C  <nickname>: <message text>    (broadcast to all)
+
+-- on disconnect --
+
+S→C  <nickname> left the chat!    (broadcast to others)
 ```
-"nickname: message text"
-```
-The client formats messages before sending; the server broadcasts them verbatim.
+
+All messages are UTF-8, up to 4096 bytes. Messages are sent and received as raw encoded strings.
+
+### Encryption
+TLS via `ssl.SSLContext`. Server loads a certificate + private key. Clients connect with `verify_mode = ssl.CERT_NONE` by default (suitable for self-signed certs on private networks). Pass `--ca-cert cert.pem` on the client for full certificate verification.
+
+### Authentication & Passwords
+- Passwords stored as PBKDF2-HMAC-SHA256 with a 16-byte random salt, 100,000 iterations.
+- Implemented in `db.py:_hash_password` / `_verify_password`.
+- Registration is automatic on first connect with a new nickname.
+
+### Persistence
+- SQLite database (`chat.db` by default) via `simplechat/db.py`.
+- Two tables: `users` (nickname, password_hash, salt, created_at) and `messages` (id, nickname, content, timestamp).
+- Last 50 messages are replayed to new clients on join.
+- `SERVER` is used as the nickname for system messages (join/leave events).
 
 ### Threading Model
-- **Server:** One thread per connected client (`handle_client` method).
-- **Client:** Two daemon threads — `receive` (listens for server messages) and `write` (reads stdin and sends).
+- **Server:** One daemon thread per connected client (`handle_client`). Client list protected by `threading.Lock()`.
+- **Client:** Two daemon threads — `receive` and `write`. Main thread polls `self.running` every 0.1s.
 
 ### Key Classes
 
-#### `ChatServer` (`server.py`)
+#### `ChatServer` (`simplechat/server.py`)
 | Method | Purpose |
 |---|---|
-| `__init__(host, port)` | Configure socket and data structures |
-| `broadcast(message)` | Send UTF-8 message to all clients |
-| `handle_client(client)` | Per-client receive/broadcast loop (threaded) |
-| `remove_client(client)` | Disconnect a client, notify others |
-| `start()` | Accept connections; SIGINT-safe shutdown |
+| `__init__(host, port, cert, key, db_path)` | Configure TLS socket, lock, database |
+| `_send(client, message)` | Send UTF-8 string to one client (swallows errors) |
+| `broadcast(message, exclude)` | Send to all clients except `exclude` |
+| `_handshake(client)` | NICK + PASSWORD exchange; returns nickname or None |
+| `_send_history(client)` | Replay recent messages from DB |
+| `handle_client(client, address)` | Full per-client lifecycle (threaded) |
+| `_remove_client(client, nickname)` | Thread-safe disconnect + broadcast |
+| `start()` | Bind, listen, accept loop; SIGINT-safe |
 
-#### `ChatClient` (`chat.py`)
+#### `ChatClient` (`simplechat/client.py`)
 | Method | Purpose |
 |---|---|
-| `__init__()` | Initialize socket and state |
-| `connect(host, port)` | Establish TCP connection |
-| `receive()` | Daemon thread: reads from server, handles NICK handshake |
+| `__init__()` | Initialize state |
+| `connect(host, port, ca_cert)` | Open TLS connection |
+| `_handshake()` | Auth protocol; handles REGISTER vs LOGIN prompts |
+| `receive()` | Daemon thread: reads server messages, handles HISTORY/OK/ERROR tags |
 | `write()` | Daemon thread: reads stdin, sends messages |
-| `stop()` | Shut down socket and threads |
-| `start()` | Prompt user, launch threads |
+| `stop()` | Shutdown socket + set running=False |
+| `start(host, port, nickname, ca_cert)` | Prompt user, connect, authenticate, launch threads |
+
+#### Database (`simplechat/db.py`)
+| Function | Purpose |
+|---|---|
+| `init_db(path)` | Open/create SQLite DB, ensure tables exist |
+| `user_exists(conn, nickname)` | Check if nickname is registered |
+| `register_user(conn, nickname, password)` | Hash + store new user |
+| `authenticate_user(conn, nickname, password)` | Verify credentials |
+| `save_message(conn, nickname, content)` | Persist a message |
+| `get_recent_messages(conn, limit)` | Fetch last N messages, oldest-first |
 
 ---
 
@@ -101,40 +167,52 @@ The client formats messages before sending; the server broadcasts them verbatim.
 ### Naming
 - **Classes:** PascalCase (`ChatServer`, `ChatClient`)
 - **Methods and variables:** `snake_case`
-- **Constants:** Inline hardcoded values (no separate constants file)
+- **"Private" helpers:** prefixed with `_` (`_handshake`, `_send`, `_remove_client`)
+- **Constants:** Module-level uppercase (`BUFFER_SIZE`, `HISTORY_LIMIT`)
+
+### Error Handling
+- Use `except Exception:` (never bare `except:`).
+- Use specific exceptions (`ConnectionRefusedError`, `ssl.SSLError`, `socket.gaierror`) at system boundaries.
+- Internal helpers that swallow errors (e.g. `_send`) should use `except Exception: pass` and be clearly scoped.
 
 ### Socket Configuration
-- Server enables `SO_REUSEADDR` to allow quick rebinding after restart.
-- Client uses `socket.shutdown(socket.SHUT_RDWR)` before `close()` for a proper TCP FIN sequence.
+- Server: `SO_REUSEADDR` for quick rebind after restart.
+- Client: `socket.shutdown(socket.SHUT_RDWR)` before `close()` in `stop()`.
+
+### Thread Safety
+- `ChatServer.clients` (list of `(socket, nickname)` tuples) is always accessed under `self._lock`.
+- `_remove_client` rebuilds the list rather than calling `.remove()` to avoid index drift.
 
 ### Signal Handling
-Both `server.py` and `chat.py` register a `SIGINT` handler to enable graceful shutdown on `Ctrl+C`.
-
-### Error Handling (Known Limitations)
-The codebase uses broad `except:` clauses in several places, which catch all exceptions including `SystemExit` and `KeyboardInterrupt`. This is a known Python anti-pattern. Prefer `except Exception:` or specific exception types when making changes.
+Both `server.py` and `client.py` register `SIGINT` handlers for graceful shutdown.
 
 ---
 
 ## Development Workflow
 
-### No build step required
-The project is two plain Python scripts. There is no compilation, packaging, or dependency installation needed.
+### Install for development
+```bash
+pip install -e .
+```
 
-### No test suite
-There are currently no automated tests. When adding tests, use `pytest` and follow the standard naming convention:
+### No build step required
+Plain Python — no compilation or transpilation.
+
+### No test suite (yet)
+When adding tests, use `pytest`:
 - Test files: `test_<module>.py`
 - Test functions: `test_<description>()`
 
 ### Formatting
-No linter or formatter is configured. Follow PEP 8:
+No linter configured. Follow PEP 8:
 - 4 spaces for indentation (no tabs)
 - Lines ≤ 79 characters
-- Blank lines between methods and between top-level definitions
+- Blank lines between methods and top-level definitions
 
 ### Branching
 - Primary development branch: `master`
-- Feature branches should follow: `feature/<short-description>`
-- Claude AI branches follow: `claude/<task-id>`
+- Feature branches: `feature/<short-description>`
+- Claude AI branches: `claude/<task-id>`
 
 ---
 
@@ -142,26 +220,29 @@ No linter or formatter is configured. Follow PEP 8:
 
 | Setting | Value | Location |
 |---|---|---|
-| Server bind host | `0.0.0.0` | `server.py:__init__` |
-| Default port | `65432` | `server.py:__init__`, `chat.py:start` |
-| Default client IP | `192.168.0.103` | `chat.py:start` |
-| Message buffer size | `1024` bytes | `chat.py:receive`, `server.py:handle_client` |
+| Server bind host | `0.0.0.0` | `simplechat/server.py:main` |
+| Default port | `65432` | `simplechat/server.py:main`, `simplechat/client.py:start` |
+| Default client IP | `127.0.0.1` | `simplechat/client.py:start` |
+| TLS certificate | `cert.pem` | `simplechat/server.py:main` |
+| TLS private key | `key.pem` | `simplechat/server.py:main` |
+| SQLite database | `chat.db` | `simplechat/server.py:main` |
+| Message buffer size | `4096` bytes | `BUFFER_SIZE` in server.py + client.py |
 | Message encoding | `utf-8` | throughout |
-| Nickname protocol token | `NICK` | `server.py:handle_client`, `chat.py:receive` |
+| History replay limit | `50` messages | `HISTORY_LIMIT` in server.py |
+| Password KDF | PBKDF2-HMAC-SHA256, 100k iterations | `simplechat/db.py` |
+| Nickname protocol token | `NICK` | server + client handshake |
 
 ---
 
 ## What This Project Does NOT Have
 
-Be aware of these absent features before suggesting or adding them:
-
 - **No external dependencies** — do not add third-party libraries without discussion.
-- **No authentication or encryption** — the protocol is plaintext over TCP.
-- **No message persistence** — messages exist only in-memory during the session.
-- **No message history** — new clients see no prior messages.
-- **No tests** — adding `pytest` tests is welcome but not yet set up.
-- **No CI/CD** — no GitHub Actions or other pipelines configured.
-- **No packaging** — no `setup.py`, `pyproject.toml`, or `requirements.txt`.
+- **No end-to-end encryption** — server decrypts messages to broadcast; TLS is transport-layer only.
+- **No message rooms/channels** — single global chat only.
+- **No admin commands** — no kick/ban/mute.
+- **No rate limiting or abuse protection**.
+- **No tests** — `pytest` tests are welcome but not yet set up.
+- **No CI/CD** — no GitHub Actions configured.
 
 ---
 

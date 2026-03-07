@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "simple-chat-client"
+version = "0.2.0"
+description = "A simple encrypted multi-user TCP chat application"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "David P. Adams" }]
+requires-python = ">=3.8"
+
+# No third-party dependencies — stdlib only.
+
+[project.scripts]
+chat-server = "simplechat.server:main"
+chat-client = "simplechat.client:main"
+
+[tool.setuptools.packages.find]
+include = ["simplechat*"]
