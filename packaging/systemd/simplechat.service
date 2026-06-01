@@ -1,0 +1,22 @@
+[Unit]
+Description=SimpleChat TLS chat server
+Documentation=file:/mnt/sda1/Repos/simple-chat-client/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dadams
+Group=dadams
+WorkingDirectory=/mnt/sda1/Repos/simple-chat-client
+ExecStart=/usr/bin/python3 /mnt/sda1/Repos/simple-chat-client/server.py --host 0.0.0.0 --port 65432 --cert /mnt/sda1/Repos/simple-chat-client/cert.pem --key /mnt/sda1/Repos/simple-chat-client/key.pem --db /mnt/sda1/Repos/simple-chat-client/chat.db
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/mnt/sda1/Repos/simple-chat-client
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

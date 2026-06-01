@@ -33,41 +33,41 @@ Logs output to `chat_server.log`.
 
 ---
 
-### **Option 3: `systemd`** (Linux)
+### **Option 3: user `systemd` service** (Linux)
 
-1. Create a service file:
+The repo includes a ready-to-install user service:
+
 ```bash
-sudo nano /etc/systemd/system/chatserver.service
+mkdir -p ~/.config/systemd/user
+install -m 0644 packaging/systemd/simplechat-user.service \
+  ~/.config/systemd/user/simplechat.service
+systemctl --user daemon-reload
+systemctl --user enable --now simplechat.service
 ```
 
-2. Add:
-```ini
-[Unit]
-Description=Python Chat Server
-After=network.target
+View status and logs:
 
-[Service]
-Type=simple
-ExecStart=/usr/bin/python3 /path/to/server.py
-Restart=always
-RestartSec=3
-StandardOutput=append:/var/log/chatserver.log
-StandardError=append:/var/log/chatserver.err
-
-[Install]
-WantedBy=multi-user.target
+```bash
+systemctl --user status simplechat.service --no-pager
+journalctl --user -u simplechat.service -f
 ```
 
-3. Reload and enable:
+If you want the user service to start before login, enable linger once:
+
 ```bash
+sudo loginctl enable-linger "$USER"
+```
+
+### **Option 4: system `systemd` service** (Linux)
+
+A system-wide unit is also included:
+
+```bash
+sudo install -m 0644 packaging/systemd/simplechat.service \
+  /etc/systemd/system/simplechat.service
 sudo systemctl daemon-reload
-sudo systemctl enable chatserver
-sudo systemctl start chatserver
-```
-
-4. View logs:
-```bash
-journalctl -u chatserver
+sudo systemctl enable --now simplechat.service
+sudo systemctl status simplechat.service --no-pager
 ```
 
 ---

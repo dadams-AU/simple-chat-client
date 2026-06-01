@@ -18,8 +18,9 @@ from .db import (
     save_message,
     user_exists,
 )
+from .protocol import ProtocolError, recv_frame, send_frame
+from .validation import message_error, nickname_error
 
-BUFFER_SIZE = 4096
 HISTORY_LIMIT = 50
 
 
@@ -38,6 +39,7 @@ class ChatServer:
 
         # TLS
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.load_cert_chain(cert, key)
 
         raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -50,16 +52,31 @@ class ChatServer:
 
     def _send(self, client, message):
         try:
-            client.send(message.encode('utf-8'))
+            send_frame(client, message)
+            return True
         except Exception:
-            pass
+            return False
 
     def broadcast(self, message, exclude=None):
         with self._lock:
             targets = list(self.clients)
+        failed = []
         for client, _ in targets:
             if client is not exclude:
-                self._send(client, message)
+                if not self._send(client, message):
+                    failed.append(client)
+        if failed:
+            with self._lock:
+                self.clients = [
+                    (client, nick)
+                    for client, nick in self.clients
+                    if client not in failed
+                ]
+            for client in failed:
+                try:
+                    client.close()
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # Connection handshake
@@ -79,14 +96,21 @@ class ChatServer:
         """
         try:
             self._send(client, 'NICK')
-            nickname = client.recv(BUFFER_SIZE).decode('utf-8').strip()
-            if not nickname:
+            nickname = recv_frame(client)
+            if nickname is None:
+                return None
+            nickname = nickname.strip()
+            error = nickname_error(nickname)
+            if error:
+                self._send(client, f'ERROR:{error}')
                 return None
 
             exists = user_exists(self.db, nickname)
-            self._send(client, 'PASSWORD:LOGIN' if exists else 'PASSWORD:REGISTER')
-            password = client.recv(BUFFER_SIZE).decode('utf-8').strip()
+            prompt = 'PASSWORD:LOGIN' if exists else 'PASSWORD:REGISTER'
+            self._send(client, prompt)
+            password = recv_frame(client)
             if not password:
+                self._send(client, 'ERROR:Password cannot be empty')
                 return None
 
             if exists:
@@ -101,6 +125,8 @@ class ChatServer:
             self._send(client, 'AUTH:OK')
             return nickname
 
+        except ProtocolError:
+            return None
         except Exception:
             return None
 
@@ -135,14 +161,19 @@ class ChatServer:
 
         while True:
             try:
-                data = client.recv(BUFFER_SIZE)
-                if not data:
+                data = recv_frame(client)
+                if data is None:
                     break
-                message = data.decode('utf-8').strip()
-                if message:
-                    formatted = f'{nickname}: {message}'
-                    self.broadcast(formatted)
-                    save_message(self.db, nickname, message)
+                message = data.strip()
+                error = message_error(message)
+                if error:
+                    self._send(client, f'ERROR:{error}')
+                    continue
+                formatted = f'{nickname}: {message}'
+                self.broadcast(formatted)
+                save_message(self.db, nickname, message)
+            except ProtocolError:
+                break
             except Exception:
                 break
 
@@ -150,7 +181,9 @@ class ChatServer:
 
     def _remove_client(self, client, nickname):
         with self._lock:
-            self.clients = [(c, n) for c, n in self.clients if c is not client]
+            self.clients = [
+                (c, n) for c, n in self.clients if c is not client
+            ]
         try:
             client.close()
         except Exception:
@@ -178,6 +211,7 @@ class ChatServer:
                     except Exception:
                         pass
             self.server.close()
+            self.db.close()
             sys.exit(0)
 
         signal.signal(signal.SIGINT, signal_handler)

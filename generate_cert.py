@@ -13,9 +13,35 @@ Outputs:
 """
 
 import argparse
+import ipaddress
 import os
 import subprocess
 import sys
+
+
+def _normalize_san(value):
+    if value.upper().startswith("DNS:") or value.upper().startswith("IP:"):
+        kind, name = value.split(":", 1)
+        return f"{kind.upper()}:{name}"
+    try:
+        ipaddress.ip_address(value)
+        return f"IP:{value}"
+    except ValueError:
+        return f"DNS:{value}"
+
+
+def _subject_alt_names(cn, extra_sans):
+    names = ["DNS:localhost", "IP:127.0.0.1", "IP:::1"]
+    names.append(_normalize_san(cn))
+    names.extend(_normalize_san(value) for value in extra_sans)
+
+    seen = set()
+    unique = []
+    for name in names:
+        if name not in seen:
+            unique.append(name)
+            seen.add(name)
+    return unique
 
 
 def main():
@@ -28,8 +54,13 @@ def main():
                         help='Output private key file (default: key.pem)')
     parser.add_argument('--days', type=int, default=365,
                         help='Certificate validity in days (default: 365)')
-    parser.add_argument('--cn', default='simplechat',
-                        help='Common name for the certificate (default: simplechat)')
+    parser.add_argument(
+        '--cn',
+        default='localhost',
+        help='Common name for the certificate (default: localhost)',
+    )
+    parser.add_argument('--san', action='append', default=[],
+                        help='Extra subjectAltName, such as 192.168.1.20')
     args = parser.parse_args()
 
     if os.path.exists(args.cert) or os.path.exists(args.key):
@@ -39,6 +70,8 @@ def main():
         if answer != 'y':
             print('Skipped.')
             sys.exit(0)
+
+    subject_alt_names = _subject_alt_names(args.cn, args.san)
 
     print(f'Generating self-signed certificate (valid {args.days} days)...')
     try:
@@ -51,9 +84,11 @@ def main():
                 '-days', str(args.days),
                 '-nodes',
                 '-subj', f'/CN={args.cn}',
+                '-addext', f'subjectAltName = {",".join(subject_alt_names)}',
             ],
             check=True,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
         )
     except FileNotFoundError:
         print('Error: openssl not found.')
@@ -63,11 +98,19 @@ def main():
         sys.exit(1)
     except subprocess.CalledProcessError as e:
         print(f'Certificate generation failed: {e}')
+        if e.stderr:
+            print(e.stderr.strip())
         sys.exit(1)
+
+    try:
+        os.chmod(args.key, 0o600)
+    except OSError:
+        pass
 
     print(f'\nCreated:')
     print(f'  {args.cert}  — share with clients if using --ca-cert')
     print(f'  {args.key}   — keep private, never commit to version control')
+    print(f'  SANs: {", ".join(subject_alt_names)}')
 
 
 if __name__ == '__main__':

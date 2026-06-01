@@ -10,7 +10,8 @@ import sys
 import threading
 import time
 
-BUFFER_SIZE = 4096
+from .protocol import ProtocolError, recv_frame, send_frame
+from .validation import message_error, nickname_error
 
 
 class ChatClient:
@@ -23,7 +24,7 @@ class ChatClient:
     # Connection
     # ------------------------------------------------------------------
 
-    def connect(self, host, port, ca_cert=None):
+    def connect(self, host, port, ca_cert=None, check_hostname=True):
         """
         Open a TLS connection to the server.
 
@@ -31,13 +32,15 @@ class ChatClient:
                  Omit to skip verification (self-signed certs without
                  distributing the cert file).
         """
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
         if ca_cert:
-            ctx.verify_mode = ssl.CERT_REQUIRED
-            ctx.load_verify_locations(ca_cert)
+            ctx = ssl.create_default_context(
+                ssl.Purpose.SERVER_AUTH,
+                cafile=ca_cert,
+            )
+            ctx.check_hostname = check_hostname
         else:
-            ctx.verify_mode = ssl.CERT_NONE
+            ctx = ssl._create_unverified_context()
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
 
         raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
@@ -46,13 +49,21 @@ class ChatClient:
             return True
         except ConnectionRefusedError:
             print('Could not connect — is the server running?')
-            return False
         except ssl.SSLError as e:
             print(f'TLS error: {e}')
-            return False
         except socket.gaierror:
             print('Invalid host address.')
-            return False
+        except OSError as e:
+            print(f'Connection error: {e}')
+        try:
+            if self.client is not None:
+                self.client.close()
+            else:
+                raw.close()
+        except Exception:
+            pass
+        self.client = None
+        return False
 
     # ------------------------------------------------------------------
     # Handshake
@@ -70,14 +81,14 @@ class ChatClient:
         Returns True on success.
         """
         try:
-            msg = self.client.recv(BUFFER_SIZE).decode('utf-8')
+            msg = recv_frame(self.client)
             if msg != 'NICK':
                 print('Unexpected server response during handshake.')
                 return False
 
-            self.client.send(self.nickname.encode('utf-8'))
+            send_frame(self.client, self.nickname)
 
-            prompt = self.client.recv(BUFFER_SIZE).decode('utf-8')
+            prompt = recv_frame(self.client)
             if prompt == 'PASSWORD:REGISTER':
                 print('New account — please choose a password.')
                 while True:
@@ -88,13 +99,19 @@ class ChatClient:
                     print('Passwords do not match. Try again.')
             elif prompt == 'PASSWORD:LOGIN':
                 password = getpass.getpass('Password: ')
+            elif prompt and prompt.startswith('ERROR:'):
+                print(f'Authentication failed: {prompt[6:]}')
+                return False
             else:
                 print(f'Unexpected prompt from server: {prompt}')
                 return False
 
-            self.client.send(password.encode('utf-8'))
+            send_frame(self.client, password)
 
-            response = self.client.recv(BUFFER_SIZE).decode('utf-8')
+            response = recv_frame(self.client)
+            if response is None:
+                print('Server closed the connection during authentication.')
+                return False
             if response.startswith('ERROR:'):
                 print(f'Authentication failed: {response[6:]}')
                 return False
@@ -113,11 +130,10 @@ class ChatClient:
     # ------------------------------------------------------------------
 
     def receive(self):
-        in_history = False
         while self.running:
             try:
-                message = self.client.recv(BUFFER_SIZE).decode('utf-8')
-                if not message:
+                message = recv_frame(self.client)
+                if message is None:
                     print('\nLost connection to server.')
                     self.stop()
                     break
@@ -125,10 +141,8 @@ class ChatClient:
                 if message.startswith('HISTORY:'):
                     tag = message[8:]
                     if tag == 'END':
-                        in_history = False
                         print('--- end of history ---\n')
                     elif tag.isdigit():
-                        in_history = True
                         print(f'\n--- last {tag} messages ---')
                     else:
                         # individual history line
@@ -142,6 +156,10 @@ class ChatClient:
 
             except ConnectionResetError:
                 print('\nServer closed the connection.')
+                self.stop()
+                break
+            except ProtocolError as e:
+                print(f'\nProtocol error: {e}')
                 self.stop()
                 break
             except Exception as e:
@@ -158,7 +176,11 @@ class ChatClient:
                     self.stop()
                     break
                 if message:
-                    self.client.send(message.encode('utf-8'))
+                    error = message_error(message)
+                    if error:
+                        print(error)
+                        continue
+                    send_frame(self.client, message)
             except (EOFError, KeyboardInterrupt):
                 self.stop()
                 break
@@ -180,7 +202,8 @@ class ChatClient:
         except Exception:
             pass
 
-    def start(self, host=None, port=None, nickname=None, ca_cert=None):
+    def start(self, host=None, port=None, nickname=None, ca_cert=None,
+              check_hostname=True):
         print('Welcome to SimpleChat!')
         print('Commands: /quit\n')
 
@@ -206,14 +229,20 @@ class ChatClient:
         if nickname is None:
             while True:
                 nickname = input('Nickname: ').strip()
-                if nickname:
+                error = nickname_error(nickname)
+                if not error:
                     break
-                print('Nickname cannot be empty.')
+                print(error)
+        else:
+            error = nickname_error(nickname)
+            if error:
+                print(f'Invalid nickname: {error}')
+                return
 
         self.nickname = nickname
 
         print(f'\nConnecting to {host}:{port} (TLS)...')
-        if not self.connect(host, port, ca_cert):
+        if not self.connect(host, port, ca_cert, check_hostname):
             return
 
         print('Connected. Authenticating...')
@@ -238,9 +267,20 @@ def main():
                         help='Your chat nickname')
     parser.add_argument('--ca-cert', default=None,
                         help='Server CA certificate for verification')
+    parser.add_argument('--no-check-hostname', action='store_true',
+                        help='Disable hostname verification with --ca-cert')
     args = parser.parse_args()
 
-    ChatClient().start(args.host, args.port, args.nickname, args.ca_cert)
+    if args.no_check_hostname and not args.ca_cert:
+        parser.error('--no-check-hostname requires --ca-cert')
+
+    ChatClient().start(
+        args.host,
+        args.port,
+        args.nickname,
+        args.ca_cert,
+        not args.no_check_hostname,
+    )
 
 
 if __name__ == '__main__':

@@ -11,13 +11,16 @@ It consists of a `simplechat` package plus two backwards-compat shim scripts:
 | `simplechat/server.py` | Multi-threaded TLS chat server |
 | `simplechat/client.py` | Interactive TLS chat client |
 | `simplechat/db.py` | SQLite persistence (users + messages) |
+| `simplechat/protocol.py` | Length-prefixed socket framing |
+| `simplechat/validation.py` | Shared nickname/message validation |
 | `simplechat/__init__.py` | Package version |
 | `server.py` | Shim → `simplechat.server:main` |
 | `chat.py` | Shim → `simplechat.client:main` |
 | `generate_cert.py` | One-time self-signed cert generator |
+| `packaging/systemd/` | User and system service unit files |
 | `pyproject.toml` | pip install config |
 
-**No external dependencies.** Only Python standard library modules are used: `socket`, `ssl`, `threading`, `signal`, `sys`, `time`, `sqlite3`, `hashlib`, `os`, `argparse`, `getpass`, `subprocess`.
+**No external dependencies.** Only Python standard library modules are used.
 
 **Python requirement:** 3.8+
 
@@ -31,11 +34,16 @@ simple-chat-client/
 │   ├── __init__.py      # version = "0.2.0"
 │   ├── server.py        # ChatServer class + main()
 │   ├── client.py        # ChatClient class + main()
-│   └── db.py            # SQLite helpers
+│   ├── db.py            # SQLite helpers
+│   ├── protocol.py      # Length-prefixed socket framing
+│   └── validation.py    # Shared input validation
 ├── server.py            # Shim (backwards compat)
 ├── chat.py              # Shim (backwards compat)
 ├── generate_cert.py     # Cert generator (uses subprocess + openssl)
+├── packaging/
+│   └── systemd/         # User and system service units
 ├── pyproject.toml       # pip install / console scripts
+├── tests/               # unittest coverage
 ├── README.md
 ├── LICENSE              # MIT (David P. Adams, 2025)
 └── docs/
@@ -49,6 +57,7 @@ simple-chat-client/
 ### First-time server setup (one time)
 ```bash
 python generate_cert.py       # creates cert.pem + key.pem
+python generate_cert.py --san 192.168.0.103
 ```
 
 ### Start the server
@@ -62,7 +71,7 @@ chat-server --port 65432 --db chat.db --cert cert.pem --key key.pem
 ```bash
 python chat.py                # direct (interactive prompts)
 chat-client                   # after pip install .
-chat-client --host 192.168.0.103 --nickname Alice
+chat-client --host 192.168.0.103 --nickname Alice --ca-cert cert.pem
 ```
 
 First connect with a nickname = **registration** (choose a password).
@@ -105,10 +114,10 @@ S→C  <nickname>: <message text>    (broadcast to all)
 S→C  <nickname> left the chat!    (broadcast to others)
 ```
 
-All messages are UTF-8, up to 4096 bytes. Messages are sent and received as raw encoded strings.
+Each protocol item is a UTF-8 string sent through `simplechat.protocol` as a 4-byte big-endian length followed by payload bytes. Frames are capped at 64 KiB. Chat messages are capped at 2,000 characters, and nicknames at 32 characters.
 
 ### Encryption
-TLS via `ssl.SSLContext`. Server loads a certificate + private key. Clients connect with `verify_mode = ssl.CERT_NONE` by default (suitable for self-signed certs on private networks). Pass `--ca-cert cert.pem` on the client for full certificate verification.
+TLS via `ssl.SSLContext`. Server loads a certificate + private key and requires TLS 1.2+. Clients skip certificate verification by default for quick local/private testing. Pass `--ca-cert cert.pem` to verify the certificate and hostname. Use `--no-check-hostname` only when explicitly accepting certificate trust without hostname matching.
 
 ### Authentication & Passwords
 - Passwords stored as PBKDF2-HMAC-SHA256 with a 16-byte random salt, 100,000 iterations.
@@ -116,7 +125,7 @@ TLS via `ssl.SSLContext`. Server loads a certificate + private key. Clients conn
 - Registration is automatic on first connect with a new nickname.
 
 ### Persistence
-- SQLite database (`chat.db` by default) via `simplechat/db.py`.
+- SQLite database (`chat.db` by default) via a thread-safe `ChatDatabase` wrapper in `simplechat/db.py`.
 - Two tables: `users` (nickname, password_hash, salt, created_at) and `messages` (id, nickname, content, timestamp).
 - Last 50 messages are replayed to new clients on join.
 - `SERVER` is used as the nickname for system messages (join/leave events).
@@ -131,7 +140,7 @@ TLS via `ssl.SSLContext`. Server loads a certificate + private key. Clients conn
 | Method | Purpose |
 |---|---|
 | `__init__(host, port, cert, key, db_path)` | Configure TLS socket, lock, database |
-| `_send(client, message)` | Send UTF-8 string to one client (swallows errors) |
+| `_send(client, message)` | Send one framed string to one client |
 | `broadcast(message, exclude)` | Send to all clients except `exclude` |
 | `_handshake(client)` | NICK + PASSWORD exchange; returns nickname or None |
 | `_send_history(client)` | Replay recent messages from DB |
@@ -143,12 +152,12 @@ TLS via `ssl.SSLContext`. Server loads a certificate + private key. Clients conn
 | Method | Purpose |
 |---|---|
 | `__init__()` | Initialize state |
-| `connect(host, port, ca_cert)` | Open TLS connection |
+| `connect(host, port, ca_cert, check_hostname)` | Open TLS connection |
 | `_handshake()` | Auth protocol; handles REGISTER vs LOGIN prompts |
 | `receive()` | Daemon thread: reads server messages, handles HISTORY/OK/ERROR tags |
 | `write()` | Daemon thread: reads stdin, sends messages |
 | `stop()` | Shutdown socket + set running=False |
-| `start(host, port, nickname, ca_cert)` | Prompt user, connect, authenticate, launch threads |
+| `start(host, port, nickname, ca_cert, check_hostname)` | Prompt user, connect, authenticate, launch threads |
 
 #### Database (`simplechat/db.py`)
 | Function | Purpose |
@@ -160,6 +169,12 @@ TLS via `ssl.SSLContext`. Server loads a certificate + private key. Clients conn
 | `save_message(conn, nickname, content)` | Persist a message |
 | `get_recent_messages(conn, limit)` | Fetch last N messages, oldest-first |
 
+#### Protocol (`simplechat/protocol.py`)
+| Function | Purpose |
+|---|---|
+| `send_frame(sock, message)` | Send one length-prefixed UTF-8 frame with `sendall()` |
+| `recv_frame(sock)` | Receive exactly one frame or `None` on clean EOF |
+
 ---
 
 ## Code Conventions
@@ -168,7 +183,7 @@ TLS via `ssl.SSLContext`. Server loads a certificate + private key. Clients conn
 - **Classes:** PascalCase (`ChatServer`, `ChatClient`)
 - **Methods and variables:** `snake_case`
 - **"Private" helpers:** prefixed with `_` (`_handshake`, `_send`, `_remove_client`)
-- **Constants:** Module-level uppercase (`BUFFER_SIZE`, `HISTORY_LIMIT`)
+- **Constants:** Module-level uppercase (`HISTORY_LIMIT`, `MAX_FRAME_BYTES`)
 
 ### Error Handling
 - Use `except Exception:` (never bare `except:`).
@@ -178,6 +193,7 @@ TLS via `ssl.SSLContext`. Server loads a certificate + private key. Clients conn
 ### Socket Configuration
 - Server: `SO_REUSEADDR` for quick rebind after restart.
 - Client: `socket.shutdown(socket.SHUT_RDWR)` before `close()` in `stop()`.
+- Application messages must go through `send_frame()` and `recv_frame()`.
 
 ### Thread Safety
 - `ChatServer.clients` (list of `(socket, nickname)` tuples) is always accessed under `self._lock`.
@@ -198,10 +214,13 @@ pip install -e .
 ### No build step required
 Plain Python — no compilation or transpilation.
 
-### No test suite (yet)
-When adding tests, use `pytest`:
-- Test files: `test_<module>.py`
-- Test functions: `test_<description>()`
+### Tests
+```bash
+python -m unittest discover -v
+python -m compileall -q .
+```
+
+Use stdlib `unittest`; keep the project dependency-free.
 
 ### Formatting
 No linter configured. Follow PEP 8:
@@ -226,7 +245,9 @@ No linter configured. Follow PEP 8:
 | TLS certificate | `cert.pem` | `simplechat/server.py:main` |
 | TLS private key | `key.pem` | `simplechat/server.py:main` |
 | SQLite database | `chat.db` | `simplechat/server.py:main` |
-| Message buffer size | `4096` bytes | `BUFFER_SIZE` in server.py + client.py |
+| Frame size limit | `64 KiB` | `MAX_FRAME_BYTES` in `simplechat/protocol.py` |
+| Message length limit | `2,000` characters | `MAX_MESSAGE_CHARS` in `simplechat/validation.py` |
+| Nickname length limit | `32` characters | `MAX_NICKNAME_CHARS` in `simplechat/validation.py` |
 | Message encoding | `utf-8` | throughout |
 | History replay limit | `50` messages | `HISTORY_LIMIT` in server.py |
 | Password KDF | PBKDF2-HMAC-SHA256, 100k iterations | `simplechat/db.py` |
@@ -241,7 +262,6 @@ No linter configured. Follow PEP 8:
 - **No message rooms/channels** — single global chat only.
 - **No admin commands** — no kick/ban/mute.
 - **No rate limiting or abuse protection**.
-- **No tests** — `pytest` tests are welcome but not yet set up.
 - **No CI/CD** — no GitHub Actions configured.
 
 ---

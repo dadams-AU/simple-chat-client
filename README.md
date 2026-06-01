@@ -1,14 +1,15 @@
 # Python Chat Application
 
-A simple multi-threaded Python chat app with server and client components, featuring **TLS encryption**, **user accounts with password authentication**, and **persistent message history**.
+A simple multi-threaded Python chat app with server and client components, featuring **TLS transport encryption**, **user accounts with password authentication**, and **persistent message history**.
 
 ## Features
 
-- End-to-end TLS encryption (stdlib `ssl` module, no external dependencies)
+- TLS transport encryption (stdlib `ssl` module, no external dependencies)
 - User accounts with password hashing (PBKDF2-HMAC-SHA256 via `hashlib`)
 - Message history replayed on join (SQLite via `sqlite3`)
 - Multi-user support with nicknames
 - Real-time message broadcasting
+- Length-prefixed socket framing so messages are not split or merged by TCP
 - Graceful connection and shutdown handling
 
 ## Requirements
@@ -44,6 +45,12 @@ python generate_cert.py
 This creates `cert.pem` and `key.pem` in the current directory.
 **Keep `key.pem` private.** Distribute `cert.pem` to clients only if you want them to verify the server identity with `--ca-cert`.
 
+For clients that connect by LAN IP or DNS name, include that name in the certificate:
+
+```bash
+python generate_cert.py --san 192.168.0.103 --san DNS:chat.local
+```
+
 ### 4. Start the server
 
 ```bash
@@ -67,7 +74,7 @@ python chat.py
 chat-client
 
 # With flags (skips prompts)
-chat-client --host 192.168.0.103 --port 65432 --nickname Alice
+chat-client --host 192.168.0.103 --port 65432 --nickname Alice --ca-cert cert.pem
 ```
 
 On first connect, a new nickname triggers **registration** (choose a password).
@@ -98,12 +105,17 @@ On subsequent connects, the same nickname triggers **login** (enter your passwor
 | `--port` | *(prompted)* | Server port |
 | `--nickname` | *(prompted)* | Your chat nickname |
 | `--ca-cert` | *(none)* | Server cert for verification |
+| `--no-check-hostname` | `false` | Verify the cert but skip hostname matching |
+
+Nicknames may contain letters, numbers, underscores, and hyphens, up to 32 characters.
+Messages are limited to 2,000 characters.
 
 ## Security Notes
 
-- All traffic is TLS-encrypted.
+- All traffic is encrypted in transit with TLS.
 - Passwords are never stored in plaintext — PBKDF2-HMAC-SHA256 with a random salt and 100,000 iterations.
-- The default TLS configuration skips certificate verification on the client side (suitable for private networks with self-signed certs). Pass `--ca-cert cert.pem` to enforce server identity verification.
+- The default TLS configuration skips certificate verification on the client side (suitable only for quick local/private testing). Pass `--ca-cert cert.pem` to verify the server certificate and hostname.
+- If you use `--ca-cert` with a self-signed certificate, generate the certificate with subjectAltName entries for the hostname or IP clients will use.
 - This is **not** end-to-end encrypted — the server decrypts messages to broadcast them.
 
 ## File Overview
@@ -114,11 +126,15 @@ simple-chat-client/
 │   ├── __init__.py    # Package metadata
 │   ├── server.py      # ChatServer class + main()
 │   ├── client.py      # ChatClient class + main()
-│   └── db.py          # SQLite helpers (users, messages)
+│   ├── db.py          # SQLite helpers (users, messages)
+│   ├── protocol.py    # Length-prefixed socket framing
+│   └── validation.py  # Shared nickname/message validation
 ├── server.py          # Shim: python server.py still works
 ├── chat.py            # Shim: python chat.py still works
 ├── generate_cert.py   # One-time TLS cert generator
 ├── pyproject.toml     # pip install configuration
+├── packaging/
+│   └── systemd/        # User and system service unit files
 └── docs/
     └── background.md  # Running the server persistently
 ```
@@ -126,6 +142,13 @@ simple-chat-client/
 ## Running the Server in the Background
 
 For persistent deployment (VPS, Raspberry Pi, etc.) see [`docs/background.md`](docs/background.md), which covers `screen`, `nohup`, `systemd`, and `launchctl`.
+
+## Running Tests
+
+```bash
+python -m unittest discover -v
+python -m compileall -q .
+```
 
 ## Contributing
 
